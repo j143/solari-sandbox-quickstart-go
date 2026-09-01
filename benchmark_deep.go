@@ -108,8 +108,9 @@ func main() {
 	connectLatency := elapsedMS(connectStarted)
 	fmt.Printf("control channel connected in %.2f ms\n", connectLatency)
 
+	// First command: use code.run (WebSocket) not command.run
 	firstStarted := time.Now()
-	first, err := exec(ws, "printf first-run")
+	first, err := runCode(ws, "printf first-run")
 	if err != nil {
 		fatalf("first command: %v", err)
 	}
@@ -119,10 +120,11 @@ func main() {
 	firstLatency := elapsedMS(firstStarted)
 	fmt.Printf("first command completed in %.2f ms\n", firstLatency)
 
+	// Steady-state: 30 Python executions
 	latencies := make([]float64, 0, sampleRuns)
 	for i := 0; i < sampleRuns; i++ {
 		started := time.Now()
-		result, err := exec(ws, "python3 -c 'print(sum(i*i for i in range(10000)))'")
+		result, err := runCode(ws, "python3 -c 'print(sum(i*i for i in range(10000)))'")
 		latency := elapsedMS(started)
 		if err != nil {
 			fatalf("sample %d: %v", i+1, err)
@@ -135,18 +137,20 @@ func main() {
 	summary := summarise(latencies)
 	fmt.Printf("steady state: p50 %.2f ms, p95 %.2f ms, p99 %.2f ms\n", summary.P50MS, summary.P95MS, summary.P99MS)
 
+	// File persistence test
 	marker := fmt.Sprintf("solari-state-%d", time.Now().UnixNano())
-	_, err = exec(ws, "printf '"+marker+"' > /tmp/solari-benchmark-state.txt")
+	_, err = runCode(ws, fmt.Sprintf("printf '%s' > /tmp/solari-benchmark-state.txt", marker))
 	if err != nil {
 		fatalf("write persistence marker: %v", err)
 	}
-	persisted, err := exec(ws, "cat /tmp/solari-benchmark-state.txt")
+	persisted, err := runCode(ws, "cat /tmp/solari-benchmark-state.txt")
 	if err != nil {
 		fatalf("read persistence marker: %v", err)
 	}
 	filePersistenceOK := persisted.ExitCode == 0 && strings.TrimSpace(persisted.Stdout) == marker
 
-	failed, err := exec(ws, "sh -c 'echo benchmark-error >&2; exit 23'")
+	// Error propagation test
+	failed, err := runCode(ws, "sh -c 'echo benchmark-error >&2; exit 23'")
 	if err != nil {
 		fatalf("failure scenario transport error: %v", err)
 	}
@@ -222,12 +226,17 @@ func deleteSandbox(ctx context.Context, apiKey, sandboxID string) error {
 	return nil
 }
 
-func exec(ws *websocket.Conn, command string) (*commandResult, error) {
+// runCode sends a code.run RPC over the WebSocket control channel
+func runCode(ws *websocket.Conn, code string) (*commandResult, error) {
 	id := fmt.Sprintf("bench-%d", time.Now().UnixNano())
 	request := rpcRequest{
 		ID:     id,
-		Method: "command.run",
-		Params: map[string]interface{}{"command": command},
+		Method: "code.run",
+		Params: map[string]interface{}{
+			"code":     code,
+			"language": "python",
+			"timeout":  30,
+		},
 	}
 	if err := ws.WriteJSON(request); err != nil {
 		return nil, err
@@ -241,7 +250,6 @@ func exec(ws *websocket.Conn, command string) (*commandResult, error) {
 			continue
 		}
 		if response.Error != nil {
-			// Error can be a string or an object - handle both
 			var errMsg string
 			switch e := response.Error.(type) {
 			case string:
