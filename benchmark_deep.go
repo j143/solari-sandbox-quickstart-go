@@ -41,12 +41,7 @@ type rpcRequest struct {
 type rpcResponse struct {
 	ID     string          `json:"id"`
 	Result json.RawMessage `json:"result"`
-	Error  *rpcError       `json:"error"`
-}
-
-type rpcError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Error  interface{}     `json:"error"`
 }
 
 type commandResult struct {
@@ -246,7 +241,21 @@ func exec(ws *websocket.Conn, command string) (*commandResult, error) {
 			continue
 		}
 		if response.Error != nil {
-			return nil, fmt.Errorf("rpc %s: %s", response.Error.Code, response.Error.Message)
+			// Error can be a string or an object - handle both
+			var errMsg string
+			switch e := response.Error.(type) {
+			case string:
+				errMsg = e
+			case map[string]interface{}:
+				if msg, ok := e["message"].(string); ok {
+					errMsg = msg
+				} else {
+					errMsg = fmt.Sprintf("%v", e)
+				}
+			default:
+				errMsg = fmt.Sprintf("%v", e)
+			}
+			return nil, fmt.Errorf("rpc error: %s", errMsg)
 		}
 		var result commandResult
 		if err := json.Unmarshal(response.Result, &result); err != nil {
