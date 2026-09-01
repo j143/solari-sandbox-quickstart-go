@@ -1,0 +1,4 @@
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/solari-sdk/solari-sandbox-go v0.1.2 h1:kQNL62OzUnIDSzYRn8reVNwqMsE0hEa6WpdZteCpeWQ=
+github.com/solari-sdk/solari-sandbox-go v0.1.2/go.mod h1:271EoaPtL6UayY2TC2j+dN/jBVaibX/TP4XqFgs9uwQ=
