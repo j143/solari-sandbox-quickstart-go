@@ -44,6 +44,36 @@ A Solari sandbox is a full Linux microVM that boots from a memory snapshot in ab
 3. Runs a second Python script that reads from a file input
 4. Prints stdout, stderr, and exit codes for both executions
 
+## Deep Benchmark
+
+`benchmark_deep.go` measures the sandbox lifecycle using Solari's documented REST flow: create one sandbox, run a first command, reuse that sandbox for sequential commands, then delete it.
+
+```bash
+export SOLARI_API_KEY="your-api-key-here"
+go run benchmark_deep.go
+```
+
+It records:
+
+- Sandbox creation latency
+- First-command latency
+- Create-to-first-result latency
+- Steady-state P50, P95, and P99 command latency
+- File-state behavior across REST exec calls
+- Guest exit-code and stderr propagation
+
+The lifecycle metric is:
+
+\[
+T_{\text{create-to-first-result}}
+=
+T_{\text{POST /sandboxes}}
++
+T_{\text{first POST /sandboxes/:id/exec}}
+\]
+
+Read the full [benchmark findings](docs/benchmark-findings.md) for methodology, measured GitHub Codespaces results, interpretation, limitations, and the unresolved filesystem-persistence diagnostic.
+
 ## Example Output
 
 ```
