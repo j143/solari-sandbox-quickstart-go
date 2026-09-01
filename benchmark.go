@@ -4,29 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/solari-sdk/solari-sandbox-go"
+	"github.com/gorilla/websocket"
 )
 
-// Solari Sandbox Latency Benchmark - CORRECTED
-//
-// This benchmark measures:
-// - Cold start latency: time to create a sandbox + first code execution
-// - Warm pool latency: subsequent code executions on the SAME sandbox
-// - P50, P95, P99 tail latencies across N runs
-// - Variance and standard deviation
-//
-// IMPORTANT: The previous version called RunCode() 100 times, which likely
-// created 100 separate sandboxes (100 cold starts). This version creates
-// ONE sandbox and runs all 100 executions on it, properly measuring warm pool performance.
-//
-// Usage:
-//   export SOLARI_API_KEY="your-api-key"
-//   go run benchmark.go
+const (
+	apiBaseURL    = "https://api.getsolari.com"
+	totalRuns     = 100
+	benchmarkCode = `import time
+start = time.time()
+result = sum(i * i for i in range(100000))
+end = time.time()
+print(f"Result: {result}")
+print(f"Computation time: {end - start:.4f}s")`
+)
 
 type BenchmarkResult struct {
 	RunNumber       int     `json:"run_number"`
@@ -48,6 +44,30 @@ type BenchmarkStats struct {
 	WarmPoolAvgMs      float64 `json:"warm_pool_avg_ms"`
 }
 
+type CreateSandboxRequest struct {
+	Template string `json:"template,omitempty"`
+	CPU      int    `json:"cpu,omitempty"`
+	MemoryMB int    `json:"memory_mb,omitempty"`
+}
+
+type CreateSandboxResponse struct {
+	SandboxID  string `json:"id"`
+	ControlURL string `json:"control_url"`
+	ExpiresAt  string `json:"expires_at"`
+}
+
+type CodeRunRequest struct {
+	Code     string `json:"code"`
+	Language string `json:"language"`
+	Timeout  int    `json:"timeout,omitempty"`
+}
+
+type CodeRunResponse struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
 func main() {
 	apiKey := os.Getenv("SOLARI_API_KEY")
 	if apiKey == "" {
@@ -56,66 +76,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := solarisandbox.NewClient(apiKey)
 	ctx := context.Background()
 
-	// Benchmark configuration
-	const totalRuns = 100
-	const code = `import time
-start = time.time()
-# Simulate some CPU work
-result = sum(i * i for i in range(100000))
-end = time.time()
-print(f"Result: {result}")
-print(f"Computation time: {end - start:.4f}s")`
+	fmt.Printf("Starting Solari Sandbox Latency Benchmark (%d runs)\n", totalRuns)
+	fmt.Println("Architecture: Create 1 sandbox → Run 100 code.execs over WebSocket → Destroy\n")
 
-	fmt.Printf("Starting Solari Sandbox Latency Benchmark (%d runs)...\n", totalRuns)
-	fmt.Println("Creating a single sandbox and running all executions on it...\n")
-
-	results := make([]BenchmarkResult, 0, totalRuns)
-
-	// Create ONE sandbox upfront (cold start)
-	fmt.Println("[1/3] Creating sandbox (cold start)...")
+	fmt.Println("[1/4] Creating sandbox (cold start)...")
 	sandboxStart := time.Now()
 
-	// Note: The SDK's RunCode() likely handles sandbox lifecycle internally.
-	// For a proper benchmark, we'd use the lower-level API:
-	// 1. client.CreateSandbox() -> sandboxId
-	// 2. sandbox.RunCode() in a loop (reusing same sandbox)
-	// 3. sandbox.Kill() at the end
-	//
-	// However, if the SDK doesn't expose this, RunCode() may create a new
-	// sandbox each time. Check the SDK source to confirm.
+	sandbox, err := createSandbox(ctx, apiKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create sandbox: %v\n", err)
+		os.Exit(1)
+	}
+
+	coldStartTime := time.Since(sandboxStart).Seconds() * 1000
+	fmt.Printf("Sandbox created: %s (took %.2fms)\n", sandbox.SandboxID, coldStartTime)
+
+	fmt.Println("[2/4] Connecting to WebSocket control channel...")
+	ws, _, err := websocket.DefaultDialer.Dial(sandbox.ControlURL, http.Header{
+		"Authorization": []string{"Bearer " + apiKey},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to connect WebSocket: %v\n", err)
+		deleteSandbox(ctx, apiKey, sandbox.SandboxID)
+		os.Exit(1)
+	}
+	defer ws.Close()
+	fmt.Println("WebSocket connected")
+
+	fmt.Println("[3/4] Running benchmark (100 code executions)...")
+	results := make([]BenchmarkResult, 0, totalRuns)
 
 	for i := 0; i < totalRuns; i++ {
 		startTime := time.Now()
 
-		resp, err := client.RunCode(ctx, &solarisandbox.RunCodeRequest{
-			Code:     code,
-			Language: "python",
-		})
-
-		latency := time.Since(startTime).Seconds() * 1000 // Convert to ms
+		resp, err := runCode(ws, benchmarkCode, "python")
+		latency := time.Since(startTime).Seconds() * 1000
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Run %d error: %v\n", i+1, err)
 			continue
 		}
 
-		// Estimate execution time from output (if available)
-		execTime := 0.0
-		if strings.Contains(resp.Stdout, "Computation time:") {
-			lines := strings.Split(resp.Stdout, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "Computation time:") {
-					parts := strings.Fields(line)
-					if len(parts) >= 3 {
-						fmt.Sscanf(parts[2], "%f", &execTime)
-						execTime *= 1000 // Convert to ms
-					}
-				}
-			}
-		}
+		execTime := parseExecutionTime(resp.Stdout)
 
 		result := BenchmarkResult{
 			RunNumber:       i + 1,
@@ -125,7 +129,6 @@ print(f"Computation time: {end - start:.4f}s")`
 		}
 		results = append(results, result)
 
-		// Progress indicator
 		if (i+1)%10 == 0 {
 			fmt.Printf("Completed %d/%d runs (latest: %.2fms)\n", i+1, totalRuns, latency)
 		}
@@ -133,32 +136,106 @@ print(f"Computation time: {end - start:.4f}s")`
 
 	if len(results) == 0 {
 		fmt.Fprintln(os.Stderr, "No successful runs - benchmark failed")
+		deleteSandbox(ctx, apiKey, sandbox.SandboxID)
 		os.Exit(1)
 	}
 
-	// Calculate statistics
+	fmt.Println("[4/4] Destroying sandbox...")
+	if err := deleteSandbox(ctx, apiKey, sandbox.SandboxID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to delete sandbox: %v\n", err)
+	}
+	fmt.Println("Sandbox destroyed")
+
 	stats := calculateStats(results)
-
-	// Print results
 	printResults(results, stats)
-
-	// Save JSON output
 	saveJSON(results, stats)
+}
 
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("IMPORTANT CAVEAT")
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("This benchmark calls client.RunCode() 100 times in a loop.")
-	fmt.Println("If the SDK creates a NEW sandbox for each RunCode() call,")
-	fmt.Println("this measures 100 cold starts, NOT warm pool performance.")
-	fmt.Println("")
-	fmt.Println("To properly measure warm pool latency, the SDK needs to expose:")
-	fmt.Println("  1. CreateSandbox() -> sandbox instance")
-	fmt.Println("  2. sandbox.RunCode() (reuses same sandbox)")
-	fmt.Println("  3. sandbox.Kill()")
-	fmt.Println("")
-	fmt.Println("Check the SDK source (client.go) to confirm the lifecycle.")
-	fmt.Println(strings.Repeat("=", 60))
+func createSandbox(ctx context.Context, apiKey string) (*CreateSandboxResponse, error) {
+	reqBody := CreateSandboxRequest{
+		Template: "default",
+		CPU:      1,
+		MemoryMB: 512,
+	}
+
+	req, _ := json.Marshal(reqBody)
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", apiBaseURL+"/sandboxes", strings.NewReader(string(req)))
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d", httpResp.StatusCode)
+	}
+
+	var resp CreateSandboxResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+func runCode(ws *websocket.Conn, code, language string) (*CodeRunResponse, error) {
+	err := ws.WriteJSON(map[string]interface{}{
+		"type":     "code.run",
+		"code":     code,
+		"language": language,
+		"timeout":  30,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp CodeRunResponse
+	err = ws.ReadJSON(&resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+func deleteSandbox(ctx context.Context, apiKey, sandboxID string) error {
+	httpReq, _ := http.NewRequestWithContext(ctx, "DELETE", apiBaseURL+"/sandboxes/"+sandboxID, nil)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("API returned status %d", httpResp.StatusCode)
+	}
+
+	return nil
+}
+
+func parseExecutionTime(stdout string) float64 {
+	if !strings.Contains(stdout, "Computation time:") {
+		return 0
+	}
+	lines := strings.Split(stdout, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Computation time:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				var t float64
+				if _, err := fmt.Sscanf(parts[2], "%f", &t); err == nil {
+					return t * 1000
+				}
+			}
+			break
+		}
+	}
+	return 0
 }
 
 func calculateStats(results []BenchmarkResult) BenchmarkStats {
@@ -166,21 +243,18 @@ func calculateStats(results []BenchmarkResult) BenchmarkStats {
 		return BenchmarkStats{}
 	}
 
-	// Extract latencies
 	latencies := make([]float64, len(results))
 	for i, r := range results {
 		latencies[i] = r.LatencyMs
 	}
 	sort.Float64s(latencies)
 
-	// Calculate mean
 	var sum float64
 	for _, l := range latencies {
 		sum += l
 	}
 	mean := sum / float64(len(latencies))
 
-	// Calculate standard deviation
 	var variance float64
 	for _, l := range latencies {
 		variance += (l - mean) * (l - mean)
@@ -190,12 +264,10 @@ func calculateStats(results []BenchmarkResult) BenchmarkStats {
 		stdDev = sqrt(variance / float64(len(latencies)-1))
 	}
 
-	// Calculate percentiles
 	p50 := percentile(latencies, 0.50)
 	p95 := percentile(latencies, 0.95)
 	p99 := percentile(latencies, 0.99)
 
-	// Cold start vs warm pool
 	coldStartLatency := results[0].LatencyMs
 	var warmSum float64
 	warmCount := 0
@@ -249,23 +321,22 @@ func printResults(results []BenchmarkResult, stats BenchmarkStats) {
 	fmt.Println("KEY INSIGHTS")
 	fmt.Println(strings.Repeat("=", 60))
 
-	// Analyze results
 	if stats.ColdStartLatencyMs > stats.WarmPoolAvgMs*2 {
-		fmt.Println("✓ Warm pool optimization is effective (cold start is significantly slower)")
+		fmt.Println("✓ Warm pool optimization is effective")
 	} else {
-		fmt.Println("⚠ Cold start and warm pool latencies are similar (may indicate good cold start optimization)")
+		fmt.Println("⚠ Cold start and warm pool latencies are similar")
 	}
 
 	if stats.P99LatencyMs > stats.MeanLatencyMs*3 {
-		fmt.Println("⚠ High tail latency variance (P99 is much higher than mean)")
+		fmt.Println("⚠ High tail latency variance")
 	} else {
-		fmt.Println("✓ Consistent latency (P99 is close to mean)")
+		fmt.Println("✓ Consistent latency")
 	}
 
 	if stats.StdDevMs < stats.MeanLatencyMs*0.3 {
-		fmt.Println("✓ Low variance in latency (stable performance)")
+		fmt.Println("✓ Low variance in latency")
 	} else {
-		fmt.Println("⚠ High variance in latency (unstable performance)")
+		fmt.Println("⚠ High variance in latency")
 	}
 
 	fmt.Println()
@@ -278,22 +349,10 @@ func saveJSON(results []BenchmarkResult, stats BenchmarkStats) {
 		"results":   results,
 	}
 
-	data, err := json.MarshalIndent(output, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling JSON: %v\n", err)
-		return
-	}
-
-	err = os.WriteFile("benchmark-results.json", data, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing results file: %v\n", err)
-		return
-	}
-
+	data, _ := json.MarshalIndent(output, "", "  ")
+	os.WriteFile("benchmark-results.json", data, 0644)
 	fmt.Println("Detailed results saved to: benchmark-results.json")
 }
-
-// Helper functions
 
 func percentile(sorted []float64, p float64) float64 {
 	if len(sorted) == 0 {
@@ -307,7 +366,6 @@ func sqrt(x float64) float64 {
 	if x <= 0 {
 		return 0
 	}
-	// Newton's method for square root
 	z := x
 	for i := 0; i < 10; i++ {
 		z = (z + x/z) / 2
