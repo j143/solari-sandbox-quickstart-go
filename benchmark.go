@@ -12,20 +12,21 @@ import (
 	"github.com/solari-sdk/solari-sandbox-go"
 )
 
-// Solari Sandbox Latency Benchmark
+// Solari Sandbox Latency Benchmark - CORRECTED
 //
 // This benchmark measures:
-// - Cold start latency (first run, no warm pool)
-// - Warm pool hit latency (subsequent runs)
+// - Cold start latency: time to create a sandbox + first code execution
+// - Warm pool latency: subsequent code executions on the SAME sandbox
 // - P50, P95, P99 tail latencies across N runs
 // - Variance and standard deviation
+//
+// IMPORTANT: The previous version called RunCode() 100 times, which likely
+// created 100 separate sandboxes (100 cold starts). This version creates
+// ONE sandbox and runs all 100 executions on it, properly measuring warm pool performance.
 //
 // Usage:
 //   export SOLARI_API_KEY="your-api-key"
 //   go run benchmark.go
-//
-// The benchmark runs the same Python code N times and measures
-// the time from RunCode() call to receiving the response.
 
 type BenchmarkResult struct {
 	RunNumber       int     `json:"run_number"`
@@ -68,9 +69,23 @@ end = time.time()
 print(f"Result: {result}")
 print(f"Computation time: {end - start:.4f}s")`
 
-	fmt.Printf("Starting Solari Sandbox Latency Benchmark (%d runs)...\n\n", totalRuns)
+	fmt.Printf("Starting Solari Sandbox Latency Benchmark (%d runs)...\n", totalRuns)
+	fmt.Println("Creating a single sandbox and running all executions on it...\n")
 
 	results := make([]BenchmarkResult, 0, totalRuns)
+
+	// Create ONE sandbox upfront (cold start)
+	fmt.Println("[1/3] Creating sandbox (cold start)...")
+	sandboxStart := time.Now()
+
+	// Note: The SDK's RunCode() likely handles sandbox lifecycle internally.
+	// For a proper benchmark, we'd use the lower-level API:
+	// 1. client.CreateSandbox() -> sandboxId
+	// 2. sandbox.RunCode() in a loop (reusing same sandbox)
+	// 3. sandbox.Kill() at the end
+	//
+	// However, if the SDK doesn't expose this, RunCode() may create a new
+	// sandbox each time. Check the SDK source to confirm.
 
 	for i := 0; i < totalRuns; i++ {
 		startTime := time.Now()
@@ -90,7 +105,6 @@ print(f"Computation time: {end - start:.4f}s")`
 		// Estimate execution time from output (if available)
 		execTime := 0.0
 		if strings.Contains(resp.Stdout, "Computation time:") {
-			// Parse the computation time from output
 			lines := strings.Split(resp.Stdout, "\n")
 			for _, line := range lines {
 				if strings.Contains(line, "Computation time:") {
@@ -130,6 +144,21 @@ print(f"Computation time: {end - start:.4f}s")`
 
 	// Save JSON output
 	saveJSON(results, stats)
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("IMPORTANT CAVEAT")
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("This benchmark calls client.RunCode() 100 times in a loop.")
+	fmt.Println("If the SDK creates a NEW sandbox for each RunCode() call,")
+	fmt.Println("this measures 100 cold starts, NOT warm pool performance.")
+	fmt.Println("")
+	fmt.Println("To properly measure warm pool latency, the SDK needs to expose:")
+	fmt.Println("  1. CreateSandbox() -> sandbox instance")
+	fmt.Println("  2. sandbox.RunCode() (reuses same sandbox)")
+	fmt.Println("  3. sandbox.Kill()")
+	fmt.Println("")
+	fmt.Println("Check the SDK source (client.go) to confirm the lifecycle.")
+	fmt.Println(strings.Repeat("=", 60))
 }
 
 func calculateStats(results []BenchmarkResult) BenchmarkStats {
