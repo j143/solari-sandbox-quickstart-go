@@ -45,21 +45,17 @@ type BenchmarkStats struct {
 }
 
 type CreateSandboxRequest struct {
+	Kind     string `json:"kind,omitempty"`
 	Template string `json:"template,omitempty"`
 	CPU      int    `json:"cpu,omitempty"`
-	MemoryMB int    `json:"memory_mb,omitempty"`
+	MemMb    int    `json:"memMb,omitempty"`
 }
 
 type CreateSandboxResponse struct {
-	SandboxID  string `json:"id"`
-	ControlURL string `json:"control_url"`
-	ExpiresAt  string `json:"expires_at"`
-}
-
-type CodeRunRequest struct {
-	Code     string `json:"code"`
-	Language string `json:"language"`
-	Timeout  int    `json:"timeout,omitempty"`
+	SandboxID  string `json:"sandboxId"`
+	Kind       string `json:"kind"`
+	ControlURL string `json:"controlUrl"`
+	ExpiresAt  string `json:"expiresAt"`
 }
 
 type CodeRunResponse struct {
@@ -79,7 +75,7 @@ func main() {
 	ctx := context.Background()
 
 	fmt.Printf("Starting Solari Sandbox Latency Benchmark (%d runs)\n", totalRuns)
-	fmt.Println("Architecture: Create 1 sandbox → Run 100 code.execs over WebSocket → Destroy\n")
+	fmt.Println("Architecture: Create 1 sandbox → Run 100 code.runs over WebSocket → Destroy\n")
 
 	fmt.Println("[1/4] Creating sandbox (cold start)...")
 	sandboxStart := time.Now()
@@ -153,9 +149,10 @@ func main() {
 
 func createSandbox(ctx context.Context, apiKey string) (*CreateSandboxResponse, error) {
 	reqBody := CreateSandboxRequest{
-		Template: "default",
+		Kind:     "sandbox",
+		Template: "base",
 		CPU:      1,
-		MemoryMB: 512,
+		MemMb:    512,
 	}
 
 	req, _ := json.Marshal(reqBody)
@@ -169,8 +166,10 @@ func createSandbox(ctx context.Context, apiKey string) (*CreateSandboxResponse, 
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", httpResp.StatusCode)
+	if httpResp.StatusCode != http.StatusCreated {
+		var errBody map[string]interface{}
+		json.NewDecoder(httpResp.Body).Decode(&errBody)
+		return nil, fmt.Errorf("API returned status %d: %v", httpResp.StatusCode, errBody)
 	}
 
 	var resp CreateSandboxResponse
