@@ -17,6 +17,7 @@ import (
 const (
 	apiBaseURL = "https://api.getsolari.com"
 	sampleRuns = 30
+	maxRetries = 3
 )
 
 type sandboxCreateRequest struct {
@@ -85,7 +86,7 @@ func main() {
 	fmt.Println("Measures lifecycle, steady-state latency, state persistence, and error propagation.")
 
 	createStarted := time.Now()
-	sandbox, err := createSandbox(ctx, apiKey)
+	sandbox, err := createSandboxWithRetry(ctx, apiKey)
 	if err != nil {
 		fatalf("create sandbox: %v", err)
 	}
@@ -108,7 +109,6 @@ func main() {
 	connectLatency := elapsedMS(connectStarted)
 	fmt.Printf("control channel connected in %.2f ms\n", connectLatency)
 
-	// First command: use code.run (WebSocket) not command.run
 	firstStarted := time.Now()
 	first, err := runCode(ws, "printf first-run")
 	if err != nil {
@@ -120,7 +120,6 @@ func main() {
 	firstLatency := elapsedMS(firstStarted)
 	fmt.Printf("first command completed in %.2f ms\n", firstLatency)
 
-	// Steady-state: 30 Python executions
 	latencies := make([]float64, 0, sampleRuns)
 	for i := 0; i < sampleRuns; i++ {
 		started := time.Now()
@@ -137,7 +136,6 @@ func main() {
 	summary := summarise(latencies)
 	fmt.Printf("steady state: p50 %.2f ms, p95 %.2f ms, p99 %.2f ms\n", summary.P50MS, summary.P95MS, summary.P99MS)
 
-	// File persistence test
 	marker := fmt.Sprintf("solari-state-%d", time.Now().UnixNano())
 	_, err = runCode(ws, fmt.Sprintf("printf '%s' > /tmp/solari-benchmark-state.txt", marker))
 	if err != nil {
@@ -149,7 +147,6 @@ func main() {
 	}
 	filePersistenceOK := persisted.ExitCode == 0 && strings.TrimSpace(persisted.Stdout) == marker
 
-	// Error propagation test
 	failed, err := runCode(ws, "sh -c 'echo benchmark-error >&2; exit 23'")
 	if err != nil {
 		fatalf("failure scenario transport error: %v", err)
@@ -178,6 +175,27 @@ func main() {
 	fmt.Printf("file persistence: %t\n", filePersistenceOK)
 	fmt.Printf("error propagation: %t\n", errorPropagationOK)
 	fmt.Println("detailed report saved to sandbox-deep-results.json")
+}
+
+func createSandboxWithRetry(ctx context.Context, apiKey string) (*sandboxCreateResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		sandbox, err := createSandbox(ctx, apiKey)
+		if err == nil {
+			return sandbox, nil
+		}
+		lastErr = err
+		
+		// Check if it's a rate limit (429)
+		if strings.Contains(err.Error(), "HTTP 429") {
+			backoff := time.Duration(1<<uint(attempt)) * time.Second // 1s, 2s, 4s
+			fmt.Printf("Rate limited, retrying in %v...\n", backoff)
+			time.Sleep(backoff)
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("max retries exceeded: %v", lastErr)
 }
 
 func createSandbox(ctx context.Context, apiKey string) (*sandboxCreateResponse, error) {
@@ -226,7 +244,6 @@ func deleteSandbox(ctx context.Context, apiKey, sandboxID string) error {
 	return nil
 }
 
-// runCode sends a code.run RPC over the WebSocket control channel
 func runCode(ws *websocket.Conn, code string) (*commandResult, error) {
 	id := fmt.Sprintf("bench-%d", time.Now().UnixNano())
 	request := rpcRequest{
