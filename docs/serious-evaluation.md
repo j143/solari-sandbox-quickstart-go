@@ -1,47 +1,60 @@
 # Serious Solari evaluation
 
-`cmd/solari-probe` is a repeatable REST harness for evaluating sandbox lifecycle behavior. It is deliberately small enough to adapt while retaining raw measurements and reproducible aggregates.
+`cmd/solari-probe` is a repeatable REST harness for evaluating Solari sandbox lifecycle behavior. It uses the documented Solari Sandbox API base URL and bearer-token authentication.
 
 ## Prerequisites
 
-- A Solari API key (format `slr_live_<id>_<secret>`).
+- A Solari console API key, format `slr_live_<id>_<secret>`.
 - A Go toolchain.
 - Network access to `https://api.getsolari.com`.
 
-## Run
+## Run a safe smoke test
+
+Delete any unwanted test VMs from the Solari console first. Then start with one fresh and one reuse run per workload:
 
 ```sh
-go run ./cmd/solari-probe \
-  -token "$SOLARI_TOKEN" \
-  -runs 20 \
-  -reuse-runs 10 \
-  -output results
+export SOLARI_TOKEN="slr_live_<id>_<secret>"
+go run ./cmd/solari-probe -runs 1 -reuse-runs 1 -output results
 ```
 
-The base URL defaults to `https://api.getsolari.com`. Override with `-base-url` only if you have a custom gateway.
+The base URL defaults to `https://api.getsolari.com`; use `-base-url` only for a compatible custom gateway. The command writes `results/report.json`, `results/samples.csv`, `results/report.md`, and `results/latency.svg`. Preserve JSON/CSV when sharing conclusions, since aggregates hide retries, outliers, and failures.
 
-The command creates `results/report.json`, `results/samples.csv`, `results/report.md`, and `results/latency.svg`. Keep the JSON and CSV artifacts when sharing conclusions: summary statistics alone hide retries, outliers, and failure modes.
+## Verified API mapping
 
-## What it measures
+The harness uses the Solari Sandbox API contract:
 
-Three workloads are included: `noop` (`true`), a shell CPU loop, and an 8 MiB local write. Each fresh run measures create, execute, and delete on a newly created sandbox. Reuse mode creates one sandbox per workload, then records multiple executions against that same ID.
+| Operation | HTTP request | Expected response field |
+|---|---|---|
+| Create | `POST /sandboxes` | `sandboxId` |
+| Execute | `POST /sandboxes/{sandboxId}/exec` | `exitCode`, `stdout`, `stderr` |
+| Delete | `DELETE /sandboxes/{sandboxId}` | successful empty or JSON response |
 
-For a fresh sample, lifecycle time is:
+Execution sends JSON similar to:
+
+```json
+{
+  "cmd": "sh",
+  "args": ["-c", "true"],
+  "timeoutMs": 120000
+}
+```
+
+The sandbox capability identifier is path-escaped before requests are made. The probe refuses to execute or delete if Solari does not return a `sandboxId`.
+
+## Measurement design
+
+The workloads are `noop` (`true`), a shell CPU loop, and an 8 MiB local write. Every fresh sample independently creates, executes, then deletes a sandbox:
 
 ```text
-T_lifecycle = T_create + T_execute + T_delete
+T_lifecycle = T_create + T_exec + T_delete
 ```
 
-Reuse execution samples estimate steady-state command execution without repeatedly paying creation and teardown overhead. Compare distributions rather than one-off timings: P50 describes a typical run; P95 is a practical tail-latency signal. The implementation uses a rounded nearest-rank index after sorting measurements.
+Reuse mode creates one sandbox per workload and measures repeated `/exec` calls against that same sandbox. Compare distributions rather than a one-off timing: P50 is typical latency; P95 is a practical tail-latency signal.
 
-## API adaptation
+## Quota behavior
 
-The request and response structs in `cmd/solari-probe/types.go` intentionally isolate the assumed contract. If the real Solari Sandbox API uses different paths or fields, update `Client.Create`, `Client.Execute`, `Client.Delete`, and the associated structs; do not change the measurement loop.
-
-## Reading failures
-
-Every failed operation is retained as a raw sample and counted by operation in the repo. Inspect its `error` text before labeling a performance result: HTTP 401/403 (auth), 429/5xx (quota or transient), command exit, timeout, and response-decode failures represent different product behavior.
+A `429 ConcurrencyLimitExceeded` result is recorded and stops the evaluation immediately. It is not retried, because another create would not resolve a concurrency-capacity limit. Delete obsolete VMs and begin with `-runs 1 -reuse-runs 1`; only increase repetition after the smoke test completes and cleanup is confirmed.
 
 ## Scope
 
-This v1 harness evaluates create/execute/delete and same-sandbox reuse. Snapshot, pause/resume, fork, network policy, and persistence-across-restart probes are deferred until the deployed API contract for those lifecycle controls is validated.
+This v1 harness covers create, exec, delete, and same-sandbox reuse. Snapshot, pause/resume, fork, network policy, and persistence-across-restart probes remain deferred until those API contracts are separately validated.
