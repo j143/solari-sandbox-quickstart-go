@@ -5,19 +5,20 @@
 ## Prerequisites
 
 - A Solari-compatible REST endpoint implementing `POST /sandboxes`, `POST /sandboxes/{id}/execute`, and `DELETE /sandboxes/{id}`.
-- Optional bearer token authentication.
+- A Solari API key (bearer token).
 - A Go toolchain.
 
 ## Run
 
 ```sh
 go run ./cmd/solari-probe \
-  -base-url "https://your-solari-endpoint" \
-  -token "$SOLARI_TOKEN" \
+  -token "$SOLARI_API_KEY" \
   -runs 20 \
   -reuse-runs 10 \
   -output results
 ```
+
+The base URL defaults to `https://api.solari.dev`. If your endpoint differs, override it with `-base-url "https://your-endpoint"`.
 
 The command creates `results/report.json`, `results/samples.csv`, `results/report.md`, and `results/latency.svg`. Keep the JSON and CSV artifacts when sharing conclusions: summary statistics alone hide retries, outliers, and failure modes.
 

@@ -14,7 +14,7 @@ import (
 
 func main() {
 	var cfg Config
-	flag.StringVar(&cfg.BaseURL, "base-url", os.Getenv("SOLARI_BASE_URL"), "Solari REST base URL")
+	flag.StringVar(&cfg.BaseURL, "base-url", "https://api.solari.dev", "Solari REST base URL (default: https://api.solari.dev)")
 	flag.StringVar(&cfg.Token, "token", os.Getenv("SOLARI_TOKEN"), "Bearer token (or SOLARI_TOKEN)")
 	flag.IntVar(&cfg.Runs, "runs", 10, "fresh lifecycle runs per workload")
 	flag.IntVar(&cfg.ReuseRuns, "reuse-runs", 5, "same-sandbox reuse runs per workload")
@@ -22,8 +22,8 @@ func main() {
 	flag.StringVar(&cfg.OutputDir, "output", "results", "report output directory")
 	flag.Parse()
 
-	if cfg.BaseURL == "" {
-		log.Fatal("-base-url or SOLARI_BASE_URL is required")
+	if cfg.Token == "" {
+		log.Fatal("-token or SOLARI_TOKEN is required")
 	}
 	if cfg.Runs < 1 || cfg.ReuseRuns < 1 {
 		log.Fatal("-runs and -reuse-runs must both be at least 1")
