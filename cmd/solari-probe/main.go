@@ -14,8 +14,8 @@ import (
 
 func main() {
 	var cfg Config
-	flag.StringVar(&cfg.BaseURL, "base-url", "https://api.solari.dev", "Solari REST base URL (default: https://api.solari.dev)")
-	flag.StringVar(&cfg.Token, "token", os.Getenv("SOLARI_TOKEN"), "Bearer token (or SOLARI_TOKEN)")
+	flag.StringVar(&cfg.BaseURL, "base-url", "https://api.getsolari.com", "Solari REST base URL (default: https://api.getsolari.com)")
+	flag.StringVar(&cfg.Token, "token", os.Getenv("SOLARI_TOKEN"), "Bearer token (or SOLARI_TOKEN); format slr_live_<id>_<secret>")
 	flag.IntVar(&cfg.Runs, "runs", 10, "fresh lifecycle runs per workload")
 	flag.IntVar(&cfg.ReuseRuns, "reuse-runs", 5, "same-sandbox reuse runs per workload")
 	flag.DurationVar(&cfg.Timeout, "timeout", 2*time.Minute, "per-request timeout")

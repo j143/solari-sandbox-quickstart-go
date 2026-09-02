@@ -4,21 +4,21 @@
 
 ## Prerequisites
 
-- A Solari-compatible REST endpoint implementing `POST /sandboxes`, `POST /sandboxes/{id}/execute`, and `DELETE /sandboxes/{id}`.
-- A Solari API key (bearer token).
+- A Solari API key (format `slr_live_<id>_<secret>`).
 - A Go toolchain.
+- Network access to `https://api.getsolari.com`.
 
 ## Run
 
 ```sh
 go run ./cmd/solari-probe \
-  -token "$SOLARI_API_KEY" \
+  -token "$SOLARI_TOKEN" \
   -runs 20 \
   -reuse-runs 10 \
   -output results
 ```
 
-The base URL defaults to `https://api.solari.dev`. If your endpoint differs, override it with `-base-url "https://your-endpoint"`.
+The base URL defaults to `https://api.getsolari.com`. Override with `-base-url` only if you have a custom gateway.
 
 The command creates `results/report.json`, `results/samples.csv`, `results/report.md`, and `results/latency.svg`. Keep the JSON and CSV artifacts when sharing conclusions: summary statistics alone hide retries, outliers, and failure modes.
 
@@ -36,12 +36,12 @@ Reuse execution samples estimate steady-state command execution without repeated
 
 ## API adaptation
 
-The request and response structs in `cmd/solari-probe/types.go` intentionally isolate the assumed contract. If your endpoint uses another path, payload field, or response shape, update `Client.Create`, `Client.Execute`, `Client.Delete`, and the associated structs; do not change the measurement loop.
+The request and response structs in `cmd/solari-probe/types.go` intentionally isolate the assumed contract. If the real Solari Sandbox API uses different paths or fields, update `Client.Create`, `Client.Execute`, `Client.Delete`, and the associated structs; do not change the measurement loop.
 
 ## Reading failures
 
-Every failed operation is retained as a raw sample and counted by operation in the report. Inspect its `error` text before labeling a performance result: HTTP authorization, quota, provisioning, command exit, timeout, and response-decode failures represent different product behavior.
+Every failed operation is retained as a raw sample and counted by operation in the repo. Inspect its `error` text before labeling a performance result: HTTP 401/403 (auth), 429/5xx (quota or transient), command exit, timeout, and response-decode failures represent different product behavior.
 
 ## Scope
 
-This v1 harness evaluates create/execute/delete and same-sandbox reuse. Snapshot, pause/resume, fork, network policy, and persistence-across-restart probes are intentionally deferred until the deployed API contract for those lifecycle controls is validated.
+This v1 harness evaluates create/execute/delete and same-sandbox reuse. Snapshot, pause/resume, fork, network policy, and persistence-across-restart probes are deferred until the deployed API contract for those lifecycle controls is validated.
